@@ -1,0 +1,124 @@
+name: "Destroy CDK Stack"
+description: "Destroys a CDK stack with validation and reporting"
+branding:
+  icon: "trash-2"
+  color: "red"
+
+inputs:
+  stack-name:
+    description: "Name of the stack to destroy"
+    required: true
+  aws-region:
+    description: "AWS Region"
+    required: true
+  aws-access-key-id:
+    description: "AWS Access Key ID"
+    required: true
+  aws-secret-access-key:
+    description: "AWS Secret Access Key"
+    required: true
+  node-version:
+    description: "Node.js version to use (if not specified, version 20 will be used)"
+    required: false
+    default: "20"
+  cdk-version:
+    description: "AWS CDK version to install (if not specified, latest version will be installed)"
+    required: false
+    default: "latest"
+  working-directory:
+    description: "Working directory for npm commands (if not specified, current directory will be used)"
+    required: false
+    default: "."
+  timeout-seconds:
+    description: "Timeout duration for destroying the CDK stack in seconds"
+    required: false
+    default: "1800" # 30 minutes in seconds
+
+outputs:
+  destruction-status:
+    description: "Status of the destruction (success/failure)"
+    value: ${{ steps.destroy.outputs.status }}
+
+runs:
+  using: composite
+  steps:
+    - name: Download Synthesized Template
+      uses: actions/download-artifact@v4
+      with:
+        name: cdk-synth
+        path: ${{ inputs.working-directory }}/cdk.out
+
+    - name: Prepare CDK Environment
+      shell: bash
+      run: mv ./cdk.out/package*.json .
+
+    - name: Setup CDK Environment
+      uses: banboniera/setup-cdk@v1
+      with:
+        aws-region: ${{ inputs.aws-region }}
+        aws-access-key-id: ${{ inputs.aws-access-key-id }}
+        aws-secret-access-key: ${{ inputs.aws-secret-access-key }}
+        node-version: ${{ inputs.node-version }}
+        cdk-version: ${{ inputs.cdk-version }}
+        working-directory: ${{ inputs.working-directory }}
+
+    - name: Destroy Stack
+      id: destroy
+      shell: bash
+      run: |
+        # Initialize status tracking
+        echo "status=pending" >> $GITHUB_OUTPUT
+        echo "START_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+
+        # Execute cdk destroy with timeout and proper error handling
+        if timeout ${{ inputs.timeout-seconds }} cdk destroy ${{ inputs.stack-name }} \
+          --force \
+          --app ${{ inputs.working-directory }}/cdk.out; then
+          
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "Destruction completed successfully"
+        else
+          EXIT_CODE=$?
+          echo "status=failure" >> $GITHUB_OUTPUT
+          
+          if [ $EXIT_CODE -eq 124 ]; then
+            echo "::error::Destruction timed out after ${{ inputs.timeout-seconds }} seconds"
+          else
+            echo "::error::Destruction failed with exit code $EXIT_CODE"
+          fi
+          
+          exit $EXIT_CODE
+        fi
+
+        echo "END_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+
+    - name: Destruction Summary
+      if: always()
+      shell: bash
+      run: |
+        echo "### Summary 🗑️" >> $GITHUB_STEP_SUMMARY
+        echo "**Stack Name**: \`${{ inputs.stack-name }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Region**: \`${{ inputs.aws-region }}\`" >> $GITHUB_STEP_SUMMARY
+
+        # Status with emoji
+        if [ "${{ steps.destroy.outputs.status }}" == "success" ]; then
+          echo "**Status**: ✅ Success" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "**Status**: ❌ Failed" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        # Calculate and display duration
+        if [[ "${{ steps.destroy.outputs.START_TIME }}" && "${{ steps.destroy.outputs.END_TIME }}" ]]; then
+          start_sec=$(date -d "${{ steps.destroy.outputs.START_TIME }}" +%s)
+          end_sec=$(date -d "${{ steps.destroy.outputs.END_TIME }}" +%s)
+          duration=$((end_sec - start_sec))
+          
+          # Format duration nicely
+          if [ $duration -ge 3600 ]; then
+            echo "**Duration**: $(($duration / 3600))h $(($duration % 3600 / 60))m $(($duration % 60))s" >> $GITHUB_STEP_SUMMARY
+          elif [ $duration -ge 60 ]; then
+            echo "**Duration**: $(($duration / 60))m $(($duration % 60))s" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Duration**: ${duration}s" >> $GITHUB_STEP_SUMMARY
+          fi
+        fi

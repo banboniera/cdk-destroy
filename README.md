@@ -4,95 +4,105 @@ A GitHub composite action that handles AWS CDK stack destruction with validation
 
 ## Features
 
-- 🗑️ Automated CDK stack destruction
-- ⏱️ Destruction timing and duration tracking
-- 📊 Detailed destruction summary with JSON outputs
-- 🔄 Status reporting and error handling
+- 🗑️ Automated CDK stack destruction with force option
+- 🔄 Support for both individual stack and all stacks destruction
+- 📊 Detailed destruction summary with status reporting
 - ⏲️ Configurable destruction timeout
-- 📁 Supports custom working directory
+- 🔐 AWS IAM role assumption support
+- 📦 Flexible artifact handling with customizable paths
+- ⚙️ Customizable Node.js version
 
 ## Usage
 
-```yaml
+```yml
 steps:
-  - name: Checkout Code
-    uses: actions/checkout@v4
-
-  - name: Setup CDK Environment
-    uses: banboniera/setup-cdk@v1
+  - name: CDK Destroy Stack
+    uses: banboniera/cdk-destroy@v2
     with:
-      aws-region: ${{ vars.AWS_REGION }}
-      aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_CDK }}
-      aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_CDK }}
-      skip-dependencies: "false"
-
-  - name: Synthesize CDK App
-    run: npm run synth:staging
-
-  - name: Prepare Artifacts for Destruction
-    run: cp package*.json ./cdk.out/
-
-  - name: Upload Synthesized Template
-    uses: actions/upload-artifact@v4
-    with:
-      name: cdk-synth
-      path: ./cdk.out
-      retention-days: 1
-
-  - name: Destroy CDK Stack
-    uses: banboniera/destroy-cdk-stack@v1
-    with:
-      stack-name: 'my-stack-name'
-      aws-region: ${{ vars.AWS_REGION }}
-      aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      aws-region: 'eu-central-1'
+      role-to-assume: 'arn:aws:iam::123456789012:role/github-actions-role'
+      stack-name: 'my-stack-name'  # optional, if not provided destroys all stacks
+      artifact-name: 'cdk-deployment-package'  # optional
+      artifact-path: 'deployment'  # optional
+      node-version: '22'  # optional
+      timeout-seconds: 1800  # optional
 ```
 
 ## Inputs
 
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
-| `stack-name` | The name of the stack to deploy | true | |
-| `aws-region` | The AWS region to deploy the stack to | true | |
-| `aws-access-key-id` | The AWS access key ID | true | |
-| `aws-secret-access-key` | The AWS secret access key | true | |
-| `node-version` | The version of Node.js to use | false | `20` |
-| `cdk-version` | The version of AWS CDK to install | false | `latest` |
-| `working-directory` | Working directory for npm commands | false | `.` |
-| `timeout-seconds` | Timeout duration for stack deployment in seconds | false | `1800` |
+| `aws-region` | Target AWS region for destruction | true | |
+| `role-to-assume` | AWS IAM role ARN to assume | true | |
+| `stack-name` | Name of the CDK stack to destroy | false | |
+| `artifact-name` | Name for the deployment artifact | false | `cdk-deployment-package` |
+| `artifact-path` | Path to store deployment files | false | `deployment` |
+| `node-version` | Node.js version to use | false | `22` |
+| `timeout-seconds` | Maximum duration for destruction in seconds | false | `1800` |
 
-## Outputs
+## Destruction Process
 
-| Output | Description |
-|--------|-------------|
-| `destruction-status` | The status of the destruction (success/failure) |
+1. Downloads the pre-synthesized CDK template from artifacts
+2. Sets up Node.js environment with specified version
+3. Configures AWS credentials using role assumption
+4. Destroys the stack with timeout protection
+5. Generates a detailed destruction summary including:
+   - Destruction status
+   - Error details (if any)
 
-## Destruction Summary
+## Example Workflow
 
-The action provides a detailed destruction summary including:
+```yml
+jobs:
+  build-synth:
+    name: Build and Synthesize
+    runs-on: ubuntu-latest
 
-- Stack name and region
-- Destruction status with visual indicators
-- Destruction duration in human-readable format
+    steps:
+      - name: Prepare CDK Environment
+        uses: banboniera/cdk-prepare@v2
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ vars.APP_NAME }}-Role-CDK
 
-## Error Handling
+  destroy:
+    name: CDK Destroy All Stacks
+    needs: [build-synth]
+    runs-on: ubuntu-latest
 
-The action includes comprehensive error handling:
+    steps:
+      - name: CDK Destroy All Stacks
+        uses: banboniera/cdk-destroy@v2
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ vars.APP_NAME }}-Role-CDK
+```
 
-- Timeout monitoring and reporting
-- Detailed error messages with exit codes
-- Proper status propagation to GitHub Actions
+## Real Example Workflow
 
-## Example
-
-```yaml
+```yml
 name: CDK Destroy Staging
 
 on:
-  workflow_dispatch: # Allows manual triggering of the workflow
+  workflow_call:
+    secrets:
+      AWS_ACCOUNT_ID:
+        description: 'AWS Account ID'
+        required: true
+      VPS_IP:
+        description: 'IP address of the VPS'
+        required: true
+      VPS_IP_PORTAINER:
+        description: 'IP address of the VPS Portainer'
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
 
 env:
   APPLICATION: ${{ vars.APP_NAME }}-Staging
+  CDK_ROLE_ARN: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ vars.APP_NAME }}-Role-CDK
 
 jobs:
   build-synth:
@@ -102,38 +112,22 @@ jobs:
     concurrency:
       group: build-synth-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true
+    timeout-minutes: 1
 
-    # Global Environment Variables:
     env:
       APP_NAME: ${{ vars.APP_NAME }}
       ENVIRONMENT: staging
-      DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+      DOMAIN_NAME: ${{ vars.ORG_NAME }}.${{ vars.TLD }}
       VPS_IP: ${{ secrets.VPS_IP }}
+      VPS_IP_PORTAINER: ${{ secrets.VPS_IP_PORTAINER }}
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup CDK Environment
-        uses: banboniera/setup-cdk@v1
+      - name: Prepare CDK Environment
+        uses: banboniera/cdk-prepare@v2
         with:
           aws-region: ${{ vars.AWS_REGION }}
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_CDK }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_CDK }}
-          skip-dependencies: "false"
-
-      - name: Synthesize CDK App
-        run: npm run synth:staging
-
-      - name: Prepare Destroy Artifacts
-        run: cp package*.json ./cdk.out/
-
-      - name: Upload Synthesized Template
-        uses: actions/upload-artifact@v4
-        with:
-          name: cdk-synth
-          path: ./cdk.out
-          retention-days: 1
+          role-to-assume: ${{ env.CDK_ROLE_ARN }}
+          synth-command: npm run synth:staging
 
   static-site:
     name: Destroy Static Site Stack
@@ -145,29 +139,11 @@ jobs:
 
     steps:
       - name: Destroy Stack
-        uses: banboniera/destroy-cdk-stack@v1
+        uses: banboniera/cdk-destroy@v2
         with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ env.CDK_ROLE_ARN }}
           stack-name: ${{ env.APPLICATION }}-Static-Site-Stack
-          aws-region: ${{ vars.AWS_REGION }}
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_CDK }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_CDK }}
-
-  ecr-repositories:
-    name: Destroy ECR Repositories Stack
-    needs: [static-site]
-    runs-on: ubuntu-latest
-    concurrency:
-      group: ecr-repositories-${{ github.workflow }}-${{ github.ref }}
-      cancel-in-progress: true
-
-    steps:
-      - name: Destroy Stack
-        uses: banboniera/destroy-cdk-stack@v1
-        with:
-          stack-name: ${{ env.APPLICATION }}-ECRRepositories-Stack
-          aws-region: ${{ vars.AWS_REGION }}
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_CDK }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_CDK }}
 
   certificate-waf:
     name: Destroy Certificate WAF Stack
@@ -179,12 +155,11 @@ jobs:
 
     steps:
       - name: Destroy Stack
-        uses: banboniera/destroy-cdk-stack@v1
+        uses: banboniera/cdk-destroy@v2
         with:
-          stack-name: ${{ env.APPLICATION }}-Certificate-Waf-Stack
           aws-region: ${{ vars.AWS_REGION }}
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_CDK }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_CDK }}
+          role-to-assume: ${{ env.CDK_ROLE_ARN }}
+          stack-name: ${{ env.APPLICATION }}-Certificate-Waf-Stack
 
   zone-public:
     name: Destroy Public Hosted Zone Stack
@@ -196,10 +171,16 @@ jobs:
 
     steps:
       - name: Destroy Stack
-        uses: banboniera/destroy-cdk-stack@v1
+        uses: banboniera/cdk-destroy@v2
         with:
-          stack-name: ${{ env.APPLICATION }}-PublicHostedZone-Stack
           aws-region: ${{ vars.AWS_REGION }}
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_CDK }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_CDK }}
+          role-to-assume: ${{ env.CDK_ROLE_ARN }}
+          stack-name: ${{ env.APPLICATION }}-PublicHostedZone-Stack
 ```
+
+## Notes
+
+- The action requires a pre-synthesized CDK template to be available as an artifact
+- Destruction timeout is set to 30 minutes by default
+- Detailed destruction results are available in the GitHub Actions step summary
+- Stacks are destroyed in a specific order to handle dependencies correctly

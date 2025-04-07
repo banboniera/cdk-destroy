@@ -1,5 +1,5 @@
-name: "Destroy CDK Stack"
-description: "Destroys a CDK stack with validation and reporting"
+name: "CDK Destroy"
+description: "Destroys a CDK with validation and reporting"
 branding:
   icon: "trash-2"
   color: "red"
@@ -18,10 +18,6 @@ inputs:
     description: "Name for the deployment artifact (default: cdk-deployment-package)"
     required: false
     default: "cdk-deployment-package"
-  artifact-path:
-    description: "Path to store deployment files (default: deployment)"
-    required: false
-    default: "deployment"
   node-version:
     description: "Node.js version (default: 22)"
     required: false
@@ -38,16 +34,15 @@ runs:
       uses: actions/download-artifact@v4
       with:
         name: ${{ inputs.artifact-name }}
-        path: ${{ inputs.artifact-path }}
-
-    - name: Move Artifact
-      shell: bash
-      run: mv ${{ inputs.artifact-path }}/* .
 
     - name: Setup Node.js ${{ inputs.node-version }}
       uses: actions/setup-node@v4
       with:
         node-version: ${{ inputs.node-version }}
+
+    - name: Install CDK
+      shell: bash
+      run: npm install -g aws-cdk
 
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -62,14 +57,15 @@ runs:
         echo "status=pending" >> $GITHUB_OUTPUT
 
         if [ -n "${{ inputs.stack-name }}" ]; then
-          DESTROY_CMD="npx cdk destroy ${{ inputs.stack-name }}"
+          DESTROY_CMD="cdk destroy ${{ inputs.stack-name }}"
         else
-          DESTROY_CMD="npx cdk destroy --all"
+          DESTROY_CMD="cdk destroy --all"
         fi
 
         if timeout ${{ inputs.timeout-seconds }} $DESTROY_CMD \
-          --force \
-          --app cdk.out; then
+          --app . \
+          --no-synth \
+          --force > >(tee /tmp/stdout.log) 2> >(tee /tmp/stderr.log >&2); then
           echo "status=success" >> $GITHUB_OUTPUT
           echo "Destruction completed successfully"
         else
@@ -79,10 +75,12 @@ runs:
           if [ $EXIT_CODE -eq 124 ]; then
             FAILURE_REASON="Destruction timed out after ${{ inputs.timeout-seconds }} seconds"
           else
-            FAILURE_REASON="Destruction failed with exit code $EXIT_CODE"
+            ERROR_OUTPUT=$(cat /tmp/stdout.log /tmp/stderr.log | tr '\n' ' ' | sed 's/"/\\"/g')
+            FAILURE_REASON="Destruction failed with exit code $EXIT_CODE. Error output: $ERROR_OUTPUT"
           fi
           echo "failure-reason=$FAILURE_REASON" >> $GITHUB_OUTPUT
           echo "::error::$FAILURE_REASON"
+          rm -f /tmp/stdout.log /tmp/stderr.log
           exit $EXIT_CODE
         fi
 
@@ -90,11 +88,9 @@ runs:
       if: always()
       shell: bash
       run: |
-        echo "### 🗑️ Destruction Summary" >> $GITHUB_STEP_SUMMARY
-
         if [ "${{ steps.destroy.outputs.status }}" == "success" ]; then
-          echo "**Status**: ✅ Success" >> $GITHUB_STEP_SUMMARY
+          echo "## **Status**: ✅ Success" >> $GITHUB_STEP_SUMMARY
         else
-          echo "**Status**: ❌ Failed" >> $GITHUB_STEP_SUMMARY
+          echo "## **Status**: ❌ Failed" >> $GITHUB_STEP_SUMMARY
           echo "**Failure Reason**: ${{ steps.destroy.outputs.failure-reason }}" >> $GITHUB_STEP_SUMMARY
         fi

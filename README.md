@@ -1,4 +1,4 @@
-# Destroy CDK Stack Action
+# CDK Destroy
 
 A GitHub composite action that handles AWS CDK stack destruction with validation and detailed reporting.
 
@@ -9,7 +9,7 @@ A GitHub composite action that handles AWS CDK stack destruction with validation
 - 📊 Detailed destruction summary with status reporting
 - ⏲️ Configurable destruction timeout
 - 🔐 AWS IAM role assumption support
-- 📦 Flexible artifact handling with customizable paths
+- 📦 Flexible artifact handling with customizable names
 - ⚙️ Customizable Node.js version
 
 ## Usage
@@ -23,7 +23,6 @@ steps:
       role-to-assume: 'arn:aws:iam::123456789012:role/github-actions-role'
       stack-name: 'my-stack-name'  # optional, if not provided destroys all stacks
       artifact-name: 'cdk-deployment-package'  # optional
-      artifact-path: 'deployment'  # optional
       node-version: '22'  # optional
       timeout-seconds: 1800  # optional
 ```
@@ -36,7 +35,6 @@ steps:
 | `role-to-assume` | AWS IAM role ARN to assume | true | |
 | `stack-name` | Name of the CDK stack to destroy | false | |
 | `artifact-name` | Name for the deployment artifact | false | `cdk-deployment-package` |
-| `artifact-path` | Path to store deployment files | false | `deployment` |
 | `node-version` | Node.js version to use | false | `22` |
 | `timeout-seconds` | Maximum duration for destruction in seconds | false | `1800` |
 
@@ -81,20 +79,10 @@ jobs:
 ## Real Example Workflow
 
 ```yml
-name: CDK Destroy Staging
+name: Destroy Staging
 
 on:
   workflow_call:
-    secrets:
-      AWS_ACCOUNT_ID:
-        description: 'AWS Account ID'
-        required: true
-      VPS_IP:
-        description: 'IP address of the VPS'
-        required: true
-      VPS_IP_PORTAINER:
-        description: 'IP address of the VPS Portainer'
-        required: true
 
 permissions:
   contents: read
@@ -102,7 +90,7 @@ permissions:
 
 env:
   APPLICATION: ${{ vars.APP_NAME }}-Staging
-  CDK_ROLE_ARN: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ vars.APP_NAME }}-Role-CDK
+  CDK_ROLE_ARN: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/${{ vars.APP_NAME }}-Role-CDK
 
 jobs:
   build-synth:
@@ -118,8 +106,8 @@ jobs:
       APP_NAME: ${{ vars.APP_NAME }}
       ENVIRONMENT: staging
       DOMAIN_NAME: ${{ vars.ORG_NAME }}.${{ vars.TLD }}
-      VPS_IP: ${{ secrets.VPS_IP }}
-      VPS_IP_PORTAINER: ${{ secrets.VPS_IP_PORTAINER }}
+      VPS_IP: ${{ vars.VPS_IP }}
+      VPS_IP_PORTAINER: ${{ vars.VPS_IP_PORTAINER }}
 
     steps:
       - name: Prepare CDK Environment
@@ -129,9 +117,25 @@ jobs:
           role-to-assume: ${{ env.CDK_ROLE_ARN }}
           synth-command: npm run synth:staging
 
+  app-registry:
+    name: Destroy App Registry Stack
+    needs: [build-synth]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: app-registry-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Destroy Stack
+        uses: banboniera/cdk-destroy@v2
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ env.CDK_ROLE_ARN }}
+          stack-name: ${{ env.APPLICATION }}-AppRegistry-Stack
+
   static-site:
     name: Destroy Static Site Stack
-    needs: [build-synth]
+    needs: [app-registry]
     runs-on: ubuntu-latest
     concurrency:
       group: static-site-${{ github.workflow }}-${{ github.ref }}
